@@ -4,57 +4,47 @@
 -- Fetch offsets via utility.HttpGet
 local offsets = nil
 
+local KnownOffsets = {
+    ["NodeNext"] = 0x10,
+}
+
 local urls = {"https://offsets.imtheo.lol/Offsets.json", "https://artxficial.dev/misc/theo"}
 for i = 1, #urls do
     local url = urls[i]
     local body, status = utility.HttpGet(url)
     if body and #body > 0 then
-        -- Minimal JSON parse: extract numeric values from the JSON response
-        -- Project Vector doesn't have JSONDecode, so we parse manually
-        local ok, result = pcall(function()
-            -- Try to use loadstring-based JSON parse
-            local json_str = body
-            -- Replace JSON syntax with Lua table syntax
-            json_str = json_str:gsub('"(%w+)"%s*:', '["%1"]=')
-            json_str = json_str:gsub('%{', '{')
-            json_str = json_str:gsub('%}', '}')
-            json_str = json_str:gsub('null', 'nil')
-            json_str = json_str:gsub('true', 'true')
-            json_str = json_str:gsub('false', 'false')
-            local fn = loadstring("return " .. json_str)
-            if fn then
-                local data = fn()
-                return data.Offsets or data
-            end
-            return nil
-        end)
+        local function extract(key)
+            return tonumber(body:match('"' .. key .. '"%s*:%s*(%d+)'))
+        end
 
-        if ok and type(result) == "table" and next(result) then
-            print("[DEBUG] Successfully using offsets from: " .. url)
-            offsets = result
+        KnownOffsets["AnimationId"] = extract("AnimationId")
+        KnownOffsets["ClassDescriptor"] = extract("ClassDescriptor")
+        KnownOffsets["ClassDescriptorToClassName"] = extract("ClassName")
+        KnownOffsets["Name"] = extract("Name")
+        KnownOffsets["TimePosition"] = extract("TimePosition")
+        KnownOffsets["ActiveAnimations"] = extract("ActiveAnimations")
+        KnownOffsets["Animation"] = extract("Animation")
+        KnownOffsets["Speed"] = extract("Speed")
+        KnownOffsets["IsPlaying"] = extract("IsPlaying")
+        
+        -- Check if we got at least one key successfully to confirm it's valid
+        if KnownOffsets["AnimationId"] then
+            print("[DEBUG] Successfully parsed offsets from: " .. url)
             break
         end
     end
 end
 
-if not offsets then
-    print("[DEBUG] Both endpoints failed. Defaulting to empty table.")
-    offsets = {}
-end
-
-local KnownOffsets = {
-    ["AnimationId"] = offsets.Misc and offsets.Misc.AnimationId or 0,
-    ["ClassDescriptor"] = offsets.Instance and offsets.Instance.ClassDescriptor or 0,
-    ["ClassDescriptorToClassName"] = offsets.Instance and offsets.Instance.ClassName or 0,
-    ["Name"] = offsets.Instance and offsets.Instance.Name or 0,
-    ["TimePosition"] = offsets.AnimationTrack and offsets.AnimationTrack.TimePosition or 0,
-    ["ActiveAnimations"] = offsets.Animator and offsets.Animator.ActiveAnimations or 0,
-    ["Animation"] = offsets.AnimationTrack and offsets.AnimationTrack.Animation or 0,
-    ["Speed"] = offsets.AnimationTrack and offsets.AnimationTrack.Speed or 0,
-    ["IsPlaying"] = offsets.AnimationTrack and offsets.AnimationTrack.IsPlaying or 0,
-    -- Node Structure
-    ["NodeNext"] = 0x10,
-}
+-- Fallbacks in case extraction fails completely
+KnownOffsets["AnimationId"] = KnownOffsets["AnimationId"] or 32
+KnownOffsets["ClassDescriptor"] = KnownOffsets["ClassDescriptor"] or 24
+KnownOffsets["ClassDescriptorToClassName"] = KnownOffsets["ClassDescriptorToClassName"] or 16
+KnownOffsets["Name"] = KnownOffsets["Name"] or 64
+KnownOffsets["TimePosition"] = KnownOffsets["TimePosition"] or 216
+KnownOffsets["ActiveAnimations"] = KnownOffsets["ActiveAnimations"] or 2944
+KnownOffsets["Animation"] = KnownOffsets["Animation"] or 184
+KnownOffsets["Speed"] = KnownOffsets["Speed"] or 212
+KnownOffsets["IsPlaying"] = KnownOffsets["IsPlaying"] or 2704
 
 local function GetAnimatorAddress(Character)
     if not Character or Character.Address == 0 then return nil end
