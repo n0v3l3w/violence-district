@@ -327,8 +327,8 @@ menu.AddGroup("Auto Parry", "Parry Settings", 0, false)
 menu.AddCheckbox("Auto Parry", "Parry Settings", "ap_enabled", "Enabled", true, {
     key = 0x50,
 })
-menu.AddSliderInt("Auto Parry", "Parry Settings", "ap_distance", "Trigger Distance", 5, 50, 18, "%d studs")
-menu.AddSliderInt("Auto Parry", "Parry Settings", "ap_viewangle", "Facing View Angle", 30, 360, 150, "%d\xC2\xB0")
+menu.AddSliderInt("Auto Parry", "Parry Settings", "ap_distance", "Trigger Distance", 5, 50, 12, "%d studs")
+menu.AddSliderInt("Auto Parry", "Parry Settings", "ap_viewangle", "Facing View Angle", 30, 360, 90, "%d\xC2\xB0")
 menu.AddSliderFloat("Auto Parry", "Parry Settings", "ap_cooldown", "Parry Cooldown", 0.5, 10.0, 2.5, "%.1fs")
 menu.AddSliderFloat("Auto Parry", "Parry Settings", "ap_delay", "Reaction Delay", 0.0, 0.5, 0.0, "%.3fs")
 menu.AddCheckbox("Auto Parry", "Parry Settings", "ap_humanizer", "Humanizer (+/-80ms)", false, {
