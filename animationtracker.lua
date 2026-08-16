@@ -1,51 +1,184 @@
 -- AnimationTracker for Project Vector
--- Rewritten from Matcha/Executor version to use Project Vector Lua API
+-- Ported from executor-based AnimationTracker v1.1
+--
+-- API changes from original:
+--   memory_read("uintptr_t", addr)  → memory.Read(addr, "ptr")
+--   memory_read("float", addr)      → memory.Read(addr, "float")
+--   memory_read("string", addr)     → memory.ReadString(addr)
+--   memory_read("byte", addr)       → memory.Read(addr, "u8")
+--   game:HttpGet(url)               → utility.HttpGet(url)
+--   HttpService:JSONDecode(str)     → parseJSON(str)  (built-in)
+--   table.find (Luau)               → table_find helper
+--   continue  (Luau)                → if/end guard
 
--- Fetch offsets via utility.HttpGet
-local offsets = nil
+---------------------------------------------------------------------------
+-- Minimal JSON parser (Vector environment has no JSONDecode)
+---------------------------------------------------------------------------
+local function parseJSON(str)
+    local pos = 1
 
-local KnownOffsets = {
-    ["NodeNext"] = 0x10,
-}
+    local function skip_ws()
+        local p = str:find("[^ \t\r\n]", pos)
+        pos = p or (#str + 1)
+    end
 
-local urls = {"https://offsets.imtheo.lol/Offsets.json", "https://artxficial.dev/misc/theo"}
-for i = 1, #urls do
-    local url = urls[i]
-    local body, status = utility.HttpGet(url)
-    if body and #body > 0 then
-        local function extract(key)
-            return tonumber(body:match('"' .. key .. '"%s*:%s*(%d+)'))
+    local function parse_string()
+        pos = pos + 1 -- skip opening "
+        local chunks = {}
+        while pos <= #str do
+            local c = str:sub(pos, pos)
+            if c == '"' then
+                pos = pos + 1
+                return table.concat(chunks)
+            elseif c == '\\' then
+                pos = pos + 1
+                local esc = str:sub(pos, pos)
+                if     esc == '"'  then chunks[#chunks + 1] = '"'
+                elseif esc == '\\' then chunks[#chunks + 1] = '\\'
+                elseif esc == 'n'  then chunks[#chunks + 1] = '\n'
+                elseif esc == 'r'  then chunks[#chunks + 1] = '\r'
+                elseif esc == 't'  then chunks[#chunks + 1] = '\t'
+                elseif esc == '/'  then chunks[#chunks + 1] = '/'
+                else                    chunks[#chunks + 1] = esc
+                end
+            else
+                chunks[#chunks + 1] = c
+            end
+            pos = pos + 1
         end
+        return table.concat(chunks)
+    end
 
-        KnownOffsets["AnimationId"] = extract("AnimationId")
-        KnownOffsets["ClassDescriptor"] = extract("ClassDescriptor")
-        KnownOffsets["ClassDescriptorToClassName"] = extract("ClassName")
-        KnownOffsets["Name"] = extract("Name")
-        KnownOffsets["TimePosition"] = extract("TimePosition")
-        KnownOffsets["ActiveAnimations"] = extract("ActiveAnimations")
-        KnownOffsets["Animation"] = extract("Animation")
-        KnownOffsets["Speed"] = extract("Speed")
-        KnownOffsets["IsPlaying"] = extract("IsPlaying")
-        
-        -- Check if we got at least one key successfully to confirm it's valid
-        if KnownOffsets["AnimationId"] then
-            print("[DEBUG] Successfully parsed offsets from: " .. url)
+    local function parse_number()
+        local start = pos
+        if str:sub(pos, pos) == '-' then pos = pos + 1 end
+        while pos <= #str and str:sub(pos, pos):match("[%d%.eE%+%-]") do
+            pos = pos + 1
+        end
+        return tonumber(str:sub(start, pos - 1))
+    end
+
+    local parse_value -- forward declaration
+
+    local function parse_object()
+        pos = pos + 1 -- skip {
+        local obj = {}
+        skip_ws()
+        if str:sub(pos, pos) == '}' then pos = pos + 1; return obj end
+        while true do
+            skip_ws()
+            local key = parse_string()
+            skip_ws()
+            pos = pos + 1 -- skip :
+            skip_ws()
+            obj[key] = parse_value()
+            skip_ws()
+            if str:sub(pos, pos) == ',' then
+                pos = pos + 1
+            else
+                break
+            end
+        end
+        skip_ws()
+        if str:sub(pos, pos) == '}' then pos = pos + 1 end
+        return obj
+    end
+
+    local function parse_array()
+        pos = pos + 1 -- skip [
+        local arr = {}
+        skip_ws()
+        if str:sub(pos, pos) == ']' then pos = pos + 1; return arr end
+        while true do
+            skip_ws()
+            arr[#arr + 1] = parse_value()
+            skip_ws()
+            if str:sub(pos, pos) == ',' then
+                pos = pos + 1
+            else
+                break
+            end
+        end
+        skip_ws()
+        if str:sub(pos, pos) == ']' then pos = pos + 1 end
+        return arr
+    end
+
+    parse_value = function()
+        skip_ws()
+        local c = str:sub(pos, pos)
+        if     c == '"' then return parse_string()
+        elseif c == '{' then return parse_object()
+        elseif c == '[' then return parse_array()
+        elseif c == 't' then pos = pos + 4; return true
+        elseif c == 'f' then pos = pos + 5; return false
+        elseif c == 'n' then pos = pos + 4; return nil
+        else                  return parse_number()
+        end
+    end
+
+    skip_ws()
+    return parse_value()
+end
+
+---------------------------------------------------------------------------
+-- Luau compatibility (Vector uses standard Lua, not Luau)
+---------------------------------------------------------------------------
+local function table_find(t, value)
+    for i = 1, #t do
+        if t[i] == value then return i end
+    end
+    return nil
+end
+
+---------------------------------------------------------------------------
+-- Fetch offsets via HTTP
+---------------------------------------------------------------------------
+local offsets
+
+for _, url in ipairs({
+    "https://offsets.imtheo.lol/Offsets.json",
+    "https://artxficial.dev/misc/theo",
+}) do
+    local body, status = utility.HttpGet(url)
+    if body then
+        local ok, result = pcall(function()
+            local data = parseJSON(body)
+            return data.Offsets or data
+        end)
+        if ok and type(result) == "table" and next(result) then
+            print("[DEBUG] Successfully using offsets from: " .. url)
+            offsets = result
             break
         end
     end
 end
 
--- Fallbacks in case extraction fails completely
-KnownOffsets["AnimationId"] = KnownOffsets["AnimationId"] or 32
-KnownOffsets["ClassDescriptor"] = KnownOffsets["ClassDescriptor"] or 24
-KnownOffsets["ClassDescriptorToClassName"] = KnownOffsets["ClassDescriptorToClassName"] or 16
-KnownOffsets["Name"] = KnownOffsets["Name"] or 64
-KnownOffsets["TimePosition"] = KnownOffsets["TimePosition"] or 216
-KnownOffsets["ActiveAnimations"] = KnownOffsets["ActiveAnimations"] or 2944
-KnownOffsets["Animation"] = KnownOffsets["Animation"] or 184
-KnownOffsets["Speed"] = KnownOffsets["Speed"] or 212
-KnownOffsets["IsPlaying"] = KnownOffsets["IsPlaying"] or 2704
+if not offsets then
+    print("[DEBUG] Both endpoints failed. Defaulting to empty table.")
+    offsets = {}
+end
 
+---------------------------------------------------------------------------
+-- Offset table (nil-safe access)
+---------------------------------------------------------------------------
+local KnownOffsets = {
+    ["AnimationId"]                = offsets.Misc and offsets.Misc.AnimationId or 0,
+    ["ClassDescriptor"]            = offsets.Instance and offsets.Instance.ClassDescriptor or 0,    -- const
+    ["ClassDescriptorToClassName"] = offsets.Instance and offsets.Instance.ClassName or 0,          -- const
+    ["Name"]                       = offsets.Instance and offsets.Instance.Name or 0,               -- const
+    ["TimePosition"]               = offsets.AnimationTrack and offsets.AnimationTrack.TimePosition or 0,
+    ["ActiveAnimations"]           = offsets.Animator and offsets.Animator.ActiveAnimations or 0,    -- const
+    ["Animation"]                  = offsets.AnimationTrack and offsets.AnimationTrack.Animation or 0,
+    ["Speed"]                      = offsets.AnimationTrack and offsets.AnimationTrack.Speed or 0,
+    ["IsPlaying"]                  = offsets.AnimationTrack and offsets.AnimationTrack.IsPlaying or 0,
+    -- Node Structure
+    ["NodeNext"] = 0x10,
+}
+
+---------------------------------------------------------------------------
+-- Core memory-reading functions
+---------------------------------------------------------------------------
 local function GetAnimatorAddress(Character)
     if not Character or Character.Address == 0 then return nil end
 
@@ -58,20 +191,20 @@ end
 
 local function GetPlayingAnimationTracks(Character)
     local AnimatorAddress = GetAnimatorAddress(Character)
-    if not AnimatorAddress then 
+    if not AnimatorAddress then
         print("Failed to resolve Animator.")
-        return 
+        return
     end
 
-    -- This is the address of the head of the linked list of active animations
+    -- Head of the linked list of active animations
     local ListHead_Ptr = memory.Read(AnimatorAddress + KnownOffsets.ActiveAnimations, "ptr")
     if not ListHead_Ptr or ListHead_Ptr == 0 then
-        return 
+        return
     end
 
-    -- When you read the pointer at the head, you get the first node in the list (or the head itself if the list is empty)
+    -- First node (or head itself if empty)
     local firstNode = memory.Read(ListHead_Ptr, "ptr")
-    if not firstNode or firstNode == 0 or firstNode == ListHead_Ptr then 
+    if not firstNode or firstNode == 0 or firstNode == ListHead_Ptr then
         return {}
     end
 
@@ -80,25 +213,25 @@ local function GetPlayingAnimationTracks(Character)
     local foundCount = 0
 
     while currentNode and currentNode ~= 0 and currentNode ~= ListHead_Ptr do
-        -- 1. Read the track data from the current node first
+        -- Read the track pointer from the current node
         local track = memory.Read(currentNode + KnownOffsets.NodeNext, "ptr")
-        
+
         if track then
             foundCount = foundCount + 1
             AnimationTracks[foundCount] = track
         end
 
-        if foundCount >= 50 then 
-            break 
+        if foundCount >= 50 then
+            break
         end
 
-        -- 2. Look ahead to see where we go next
+        -- Advance to the next node
         local nextNode = memory.Read(currentNode, "ptr")
-        
+
         if nextNode == ListHead_Ptr then
-            break -- Safe to exit now; we fully processed currentNode
+            break -- looped back to head
         elseif nextNode == 0 or not nextNode then
-            break
+            break -- end of list
         end
 
         currentNode = nextNode
@@ -109,36 +242,35 @@ end
 
 local function GetTimePosition(AnimationTrackAddress)
     if not AnimationTrackAddress or AnimationTrackAddress == 0 then return nil end
-    
-    local TimePosition = memory.Read(AnimationTrackAddress + KnownOffsets.TimePosition, "float")
-    
-    return TimePosition
+    return memory.Read(AnimationTrackAddress + KnownOffsets.TimePosition, "float")
 end
 
 local function ExtractAnimationTrackInfo(AnimationTrackAddress)
     if not AnimationTrackAddress or AnimationTrackAddress == 0 then return nil end
 
-    local Animation = memory.Read(AnimationTrackAddress + KnownOffsets.Animation, "ptr")
-    local AnimationIdPointer = memory.Read(Animation + KnownOffsets.AnimationId, "ptr")
-    local AnimationId = memory.ReadString(AnimationIdPointer)
+    local Animation      = memory.Read(AnimationTrackAddress + KnownOffsets.Animation, "ptr")
+    local AnimIdPointer  = memory.Read(Animation + KnownOffsets.AnimationId, "ptr")
+    local AnimationId    = memory.ReadString(AnimIdPointer)
 
-    local NamePtr = memory.Read(AnimationTrackAddress + KnownOffsets.Name, "ptr")
-    local Name = memory.ReadString(NamePtr)
-    local TimePosition = memory.Read(AnimationTrackAddress + KnownOffsets.TimePosition, "float")
-    local Speed = memory.Read(AnimationTrackAddress + KnownOffsets.Speed, "float")
-    local IsPlaying = memory.Read(AnimationTrackAddress + KnownOffsets.IsPlaying, "byte")
+    local NamePtr        = memory.Read(AnimationTrackAddress + KnownOffsets.Name, "ptr")
+    local Name           = memory.ReadString(NamePtr)
+    local TimePosition   = memory.Read(AnimationTrackAddress + KnownOffsets.TimePosition, "float")
+    local Speed          = memory.Read(AnimationTrackAddress + KnownOffsets.Speed, "float")
+    local IsPlaying      = memory.Read(AnimationTrackAddress + KnownOffsets.IsPlaying, "u8")
 
     return {
-        Address = AnimationTrackAddress,
-        Name = Name,
-        AnimationId = AnimationId,
+        Address      = AnimationTrackAddress,
+        Name         = Name,
+        AnimationId  = AnimationId,
         TimePosition = TimePosition,
-        Speed = Speed,
-        IsPlaying = IsPlaying
+        Speed        = Speed,
+        IsPlaying    = IsPlaying,
     }
 end
 
-
+---------------------------------------------------------------------------
+-- Signal (lightweight event emitter)
+---------------------------------------------------------------------------
 local Signal = {}
 Signal.__index = Signal
 
@@ -156,7 +288,7 @@ function Signal:Connect(callback)
                     break
                 end
             end
-        end
+        end,
     }
 end
 
@@ -166,49 +298,41 @@ function Signal:Fire(...)
     end
 end
 
+---------------------------------------------------------------------------
+-- AnimationTracker class
+---------------------------------------------------------------------------
 local AnimationTracker = {}
 AnimationTracker.__index = AnimationTracker
 
 function AnimationTracker.new(IgnoreIds)
     local self = setmetatable({}, AnimationTracker)
-    
-    self.AnimationAdded = Signal.new()
+
+    self.AnimationAdded   = Signal.new()
     self.AnimationUpdated = Signal.new()
     self.AnimationRemoved = Signal.new()
-    self.IgnoreIds = IgnoreIds or {}
-    
-    self._cachedTracks = {}
-    
+    self.IgnoreIds        = IgnoreIds or {}
+    self._cachedTracks    = {}
+
     return self
 end
 
--- Helper to check if a value exists in a table (replaces table.find)
-local function tableContains(tbl, val)
-    for i = 1, #tbl do
-        if tbl[i] == val then return true end
-    end
-    return false
-end
-
--- BATCH UPDATE: Reads, updates, cleans up, and returns all active animations at once
+-- Batch update: reads, caches, fires signals, cleans up stopped tracks
 function AnimationTracker:Update(character)
     local tracksPlaying = GetPlayingAnimationTracks(character)
     if not tracksPlaying then return {} end
 
     local currentAddresses = {}
-    local activeSnapshot = {}
+    local activeSnapshot   = {}
 
-    -- 1. Batch process all currently playing tracks
+    -- Process all currently playing tracks
     for i = 1, #tracksPlaying do
         local address = tracksPlaying[i]
-        
-        -- Mark as active so your garbage collector doesn't constantly delete and re-extract ignored tracks
-        currentAddresses[address] = true 
-    
+        currentAddresses[address] = true
+
         local info = self._cachedTracks[address]
         local newlyExtracted = false
-    
-        -- Extract and cache if it doesn't exist
+
+        -- Extract and cache if not seen before
         if not info then
             info = ExtractAnimationTrackInfo(address)
             if info then
@@ -216,29 +340,28 @@ function AnimationTracker:Update(character)
                 newlyExtracted = true
             end
         end
-    
+
         if info then
-            -- 2. Check the Ignore List
-            local assetId = info.AnimationId 
+            -- Check ignore list  (replaces Luau `continue`)
+            local assetId   = info.AnimationId
             local numericId = assetId and tonumber(string.match(tostring(assetId), "%d+"))
-    
-            -- If the ID is found in the ignore list, skip the rest of the loop
-            if not (numericId and tableContains(self.IgnoreIds, numericId)) then
-                -- 3. Process Valid Tracks
-                -- Only fire Added event if it's brand new AND passed the ignore check
+            local ignored   = numericId and table_find(self.IgnoreIds, numericId)
+
+            if not ignored then
                 if newlyExtracted then
                     self.AnimationAdded:Fire(info)
                 end
-        
+
                 local liveTime = GetTimePosition(address) or info.TimePosition
                 info.TimePosition = liveTime
-                
+
                 self.AnimationUpdated:Fire(info, liveTime)
                 table.insert(activeSnapshot, info)
             end
         end
     end
 
+    -- Purge tracks that are no longer playing
     for address, cachedInfo in pairs(self._cachedTracks) do
         if not currentAddresses[address] then
             self.AnimationRemoved:Fire(cachedInfo)
@@ -249,7 +372,7 @@ function AnimationTracker:Update(character)
     return activeSnapshot
 end
 
-print("[AnimationTracker] Functions were imported, use Tracker:Update() in a loop v1.1 (Project Vector)")
+print("[AnimationTracker] Vector port loaded, use Tracker:Update() in a loop v1.1")
 
 _G.AnimationTracker = AnimationTracker
 return AnimationTracker
